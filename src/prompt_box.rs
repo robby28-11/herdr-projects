@@ -21,6 +21,8 @@ pub enum Draft {
 fn placeholders(kind: &str) -> &'static [&'static str] {
     match kind {
         "gemini" => &["Type your message or @path/to/file"],
+        // Grok draws this in grey (`38;2;78;78;78`), not dim.
+        "grok" => &["Build anything"],
         "opencode" => &["Ask anything…"],
         _ => &[],
     }
@@ -317,6 +319,15 @@ mod tests {
         // A transcript line with `❯` that is not under a rule is not the box.
         let transcript = format!("❯ an earlier prompt\n\n{rule}\n❯ \n{rule}\n");
         assert_eq!(check("claude", &transcript), Draft::Empty);
+    }
+
+    #[test]
+    fn a_grok_placeholder_drawn_in_grey_is_empty_and_other_text_is_typed() {
+        let screen = fixture("grok-empty-placeholder");
+        assert!(screen.contains("\u{1b}[38;2;78;78;78mBuild anything"), "{screen:?}");
+        assert!(!screen.contains("\u{1b}[2m"), "the placeholder is not dim");
+        assert_eq!(check("grok", &screen), Draft::Empty);
+        assert_eq!(check("grok", &screen.replace("Build anything", "ship the fix")), Draft::Typed);
     }
 
     #[test]
