@@ -808,7 +808,15 @@ fn box_empty_for_a_while(project: &Project) {
 }
 
 fn nudges(world: &World) -> Vec<String> {
-    world.runner.calls.borrow().iter().filter(|c| c.display().contains("agent prompt")).filter_map(|c| c.args.last().cloned()).filter(|a| a.starts_with("[hp inbox]")).collect()
+    world
+        .runner
+        .calls
+        .borrow()
+        .iter()
+        .filter(|c| c.display().contains("agent prompt") && c.args.iter().any(|a| a == "prompt"))
+        .map(|c| prompt_text(c).to_string())
+        .filter(|a| a.starts_with("[hp inbox]"))
+        .collect()
 }
 
 /// Makes the fixture thread already Idle, so a test about something else does
@@ -859,8 +867,10 @@ fn a_finishing_thread_gives_one_item_and_one_nudge_until_a_new_item_arrives() {
     // One nudge, to the coordinator's pane, saying what happened.
     assert_eq!(nudges(&world), ["[hp inbox] t-0001 new report"]);
     let calls = world.runner.calls.borrow();
-    let nudge = calls.iter().find(|c| c.args.last().is_some_and(|a| a.starts_with("[hp inbox]"))).unwrap();
+    let nudge = calls.iter().find(|c| c.args.iter().any(|a| a == "prompt") && prompt_text(c).starts_with("[hp inbox]")).unwrap();
     assert!(nudge.args.contains(&"w1:p1".to_string()));
+    // Typed text is not enough: herdr must see the agent working or blocked.
+    assert!(nudge.display().ends_with("--wait --until working --until blocked --timeout 8000"), "{}", nudge.display());
     drop(calls);
 
     // Working and idle again on an unchanged report: nothing.
@@ -972,6 +982,55 @@ fn a_blocked_nudge_is_retried_and_a_busy_coordinator_is_not_prompted() {
     ticker::tick_project(&ctx, &project).unwrap();
     assert_eq!(world.runner.count("agent prompt"), 0);
     assert!(crate::steps::load_state(&project).nudged.is_empty());
+}
+
+/// `agent_prompt_stalled`: the line may sit in the box, but herdr never saw
+/// `working` or `blocked`, so the set is not marked nudged and the next tick
+/// tries again.
+#[test]
+fn a_stalled_nudge_leaves_nudged_empty_and_is_retried() {
+    let world = World::new();
+    let project = world.project("demo", "a.sock");
+    world.thread(&project, world.home.path(), |t| {
+        t.last_group = "idle".into();
+        t.last_state = "idle".into();
+        t.last_state_change = "2026-01-01T00:00:00Z".into();
+    });
+    set_agents(&world, &project, "idle");
+    const STALLED: &str = r#"{"error":{"code":"agent_prompt_stalled","message":"agent did not start working"}}"#;
+    let reply: Rc<RefCell<std::result::Result<String, String>>> = Rc::new(RefCell::new(Err(STALLED.into())));
+    let answer = reply.clone();
+    world.runner.on_fn(
+        |cmd| cmd.display().contains("agent prompt"),
+        move |_| Ok(match &*answer.borrow() {
+            Ok(text) => ok(text),
+            Err(text) => fail(1, text),
+        }),
+    );
+    world.runner.on("notification show", ok(r#"{"result":{"shown":true}}"#));
+    set_front_matter(&project, "nudge = true");
+    inbox::write(&project, "routine", "r", "due", "due", "Prompt").unwrap();
+    let ctx = world.ctx();
+
+    ticker::tick_project(&ctx, &project).unwrap();
+    idle_for_a_minute(&project);
+    ticker::tick_project(&ctx, &project).unwrap();
+    assert_eq!(world.runner.count("agent prompt"), 0, "the box was only just seen empty");
+    box_empty_for_a_while(&project);
+
+    let error = format!("{:#}", ticker::tick_project(&ctx, &project).unwrap_err());
+    assert!(error.contains("agent_prompt_stalled"), "{error}");
+    assert_eq!(world.runner.count("agent prompt"), 1);
+    assert!(crate::steps::load_state(&project).nudged.is_empty());
+    let calls = world.runner.calls.borrow();
+    let nudge = calls.iter().find(|c| c.args.iter().any(|a| a == "prompt") && prompt_text(c).starts_with("[hp inbox]")).unwrap();
+    assert!(nudge.display().ends_with("--wait --until working --until blocked --timeout 8000"), "{}", nudge.display());
+    drop(calls);
+
+    *reply.borrow_mut() = Ok(r#"{"result":{"agent":{"agent_status":"working"}}}"#.into());
+    ticker::tick_project(&ctx, &project).unwrap();
+    assert_eq!(nudges(&world), ["[hp inbox] routine r due", "[hp inbox] routine r due"]);
+    assert!(!crate::steps::load_state(&project).nudged.is_empty());
 }
 
 #[test]

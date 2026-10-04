@@ -336,9 +336,10 @@ pub fn nudge(project: &Project, state: &mut State, settings: &Settings, herdr: &
         if !box_quiet(state, herdr, pane, now)? {
             return Ok(());
         }
-        // `agent_blocked` and other errors are returned, logged by the caller,
-        // and the nudge is retried on a later tick.
-        herdr.agent_prompt(&pane.pane_id, &nudge_text(&unseen))?;
+        // Counts only once herdr has seen the agent `working` or `blocked`.
+        // A failed call is returned and logged by the caller; `state.nudged`
+        // stays unset, so a later tick tries again.
+        herdr.agent_prompt_confirmed(&pane.pane_id, &nudge_text(&unseen))?;
     }
     state.nudged = hash;
     forget_box(state);
